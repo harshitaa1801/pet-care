@@ -1,0 +1,5 @@
+# Ignore collected static files
+staticfiles/
+static/
+.env
+.idea
