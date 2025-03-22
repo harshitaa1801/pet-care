@@ -28,7 +28,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [ 'anicare-3d0b78cd3ea3.herokuapp.com','127.0.0.1']
+ALLOWED_HOSTS = [ 'web-production-a3b1f.up.railway.app','127.0.0.1']
 
 
 # Application definition
