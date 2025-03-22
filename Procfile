@@ -1,1 +1,1 @@
-web: gunicorn pet_care.wsgi --log-file -
+web: python manage.py migrate --noinput && gunicorn pet_care.wsgi --log-file -
