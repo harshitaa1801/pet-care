@@ -82,11 +82,11 @@ WSGI_APPLICATION = 'pet_care.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'pet_care',
-        'USER': 'pet_care_assistant',
-        'PASSWORD': os.environ.get('DB_PASSWORD'),
-        'HOST': 'localhost',  # or '127.0.0.1'
-        'PORT': '5432',
+        'NAME': os.environ.get('PGDATABASE'),  # or use 'POSTGRES_DB'
+        'USER': os.environ.get('PGUSER'),  # or use 'POSTGRES_USER'
+        'PASSWORD': os.environ.get('PGPASSWORD'),  # or use 'POSTGRES_PASSWORD'
+        'HOST': os.environ.get('PGHOST'),  # or use 'DATABASE_URL' if appropriate
+        'PORT': os.environ.get('PGPORT', 5432),  # Default PostgreSQL port
     }
 }
 
