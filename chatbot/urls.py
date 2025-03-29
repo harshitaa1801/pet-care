@@ -1,8 +1,14 @@
-from django.urls import path
-from .views import generate_response, query_assistant, submit_answers
+from django.urls import path, include
+from .views import SmartQueryViewSet, QueryView, AnswerView
+
+from rest_framework.routers import DefaultRouter
+
+router = DefaultRouter()
+
+router.register("query", QueryView, basename="query")
+router.register("answer", AnswerView, basename="answer")
+router.register("smart-query", SmartQueryViewSet, basename="smart-query")
 
 urlpatterns = [
-    path('generate/', generate_response, name='generate_response'),
-    path('query/', query_assistant, name='query_assistant'),
-    path('submit/', submit_answers, name='submit_answers'),
+    path("api/",  include(router.urls)),
 ]

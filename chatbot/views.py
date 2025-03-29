@@ -1,153 +1,253 @@
 import json
-from django.shortcuts import render
 
-# Create your views here.
-import openai
-from django.http import JsonResponse
-from django.conf import settings
-from rest_framework.decorators import api_view
-import os
-import json
+from rest_framework import viewsets, status
+from rest_framework.response import Response
 
-# OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+from django.shortcuts import get_object_or_404
+from .models import Query, Question, Answer, Remedy
+from .serializers import QuerySerializer, AnswerSerializer, QueryResponseSerializer, SmartQuerySerializer
+from .utils import GeminiService
+import uuid
 
-@api_view(['POST'])
-def generate_response(request):
-    data = json.loads(request.body)
-    user_input = data.get("message")
 
-    if not user_input:
-        return JsonResponse({"error": "Message is required"}, status=400)
 
-    try:
-        client = openai.Client(api_key='abcd')
-        response = client.chat.completions.create(
-            model="gpt-4o",  # Or your custom GPT model
-            messages=[{"role": "user", "content": user_input}],
-            max_tokens=500,
-            temperature=0.7
+# to integrate with frontend
+class QueryView(viewsets.ViewSet):
+    """
+    API endpoint to handle user queries about pet care
+    """
+    def create(self, request):
+        # Extract query text from request
+        query_text = request.data.get('query')
+        if not query_text:
+            return Response(
+                {'error': 'Query text is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get or create session ID
+        session_id = request.data.get('session_id')
+        if not session_id:
+            session_id = str(uuid.uuid4())
+        
+        # Check if query is pet-related using Gemini
+        ai_service = GeminiService()
+        is_pet_related = ai_service.is_pet_related(query_text)
+        
+        # Create query record
+        query = Query.objects.create(
+            text=query_text,
+            is_pet_related=is_pet_related,
+            session_id=session_id
         )
-        response_content = response.choices[0].message.content.strip()
-        print(response_content)
+        
+        # If not pet-related, return appropriate message
+        if not is_pet_related:
+            return Response({
+                'query_id': query.id,
+                'next_question': None,
+                'remedy': None,
+                'message': 'This is not my expertise, please ask a medical query for pets'
+            })
+        
+        # Generate follow-up questions using Gemini
+        questions = ai_service.generate_followup_questions(query_text)
+        
+        # Store questions in database
+        for i, question_text in enumerate(questions):
+            Question.objects.create(
+                query=query,
+                text=question_text,
+                order=i+1
+            )
+        
+        # Get the first question to return
+        first_question = query.questions.first()
+        
+        # Return response with query ID and first question
+        return Response({
+            'query_id': query.id,
+            'next_question': {
+                'id': first_question.id,
+                'text': first_question.text,
+                'order': first_question.order
+            } if first_question else None,
+            'remedy': None,
+            'message': None
+        })
 
-        # return JsonResponse({"response": response["choices"][0]["message"]["content"]})
-        return JsonResponse({"response": response_content})
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
-
-
-
-
-# asst_R9bdwgvWfd97tvW69YeW8nI8
-
-
-
-
-ASSISTANT_ID = "asst_CefoSr6xBfbH4TwNmzYEmNfQ"  # Replace with your assistant ID
-
-@api_view(['POST'])
-def query_assistant(request):
-    data = request.data
-    user_query = data.get("query")
-
-    if not user_query:
-        return JsonResponse({"error": "Query is required"}, status=400)
-
-    client = openai.Client(api_key=OPENAI_API_KEY)
-    thread = client.beta.threads.create()
-
-    client.beta.threads.messages.create(
-        thread_id=thread.id,
-        role="user",
-        content=user_query
-    )
-
-    run = client.beta.threads.runs.create(
-        thread_id=thread.id,
-        assistant_id=ASSISTANT_ID
-    )
-
-    while run.status in ['queued', 'in_progress']:
-        run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-
-    messages = client.beta.threads.messages.list(thread_id=thread.id)
-    # follow_up_questions = messages.data[0].content
-
-    extracted_responses = []
-    for message in messages.data:
-        for content_block in message.content:
-            if hasattr(content_block, 'text'):
-                # Try parsing text content as JSON if possible, otherwise treat it as plain text
+class AnswerView(viewsets.ViewSet):
+    """
+    API endpoint to handle user answers to follow-up questions
+    """
+    def create(self, request):
+        # Extract data from request
+        question_id = request.data.get('question_id')
+        answer_text = request.data.get('answer')
+        
+        if not question_id or not answer_text:
+            return Response(
+                {'error': 'Question ID and answer text are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get the question
+        question = get_object_or_404(Question, id=question_id)
+        query = question.query
+        
+        # Store the answer
+        Answer.objects.create(
+            question=question,
+            text=answer_text
+        )
+        
+        # Find the next unanswered question
+        answered_questions = Answer.objects.filter(question__query=query).values_list('question_id', flat=True)
+        next_question = Question.objects.filter(query=query).exclude(id__in=answered_questions).order_by('order').first()
+        
+        # If no more questions, generate remedy
+        if not next_question:
+            # Collect all Q&A pairs
+            qa_pairs = []
+            for q in Question.objects.filter(query=query).order_by('order'):
                 try:
-                    parsed_content = json.loads(content_block.text.value)
-                    extracted_responses.append(parsed_content)
-                except json.JSONDecodeError:
-                    extracted_responses.append(content_block.text.value)
+                    answer = q.answer
+                    qa_pairs.append({
+                        'question': q.text,
+                        'answer': answer.text
+                    })
+                except Answer.DoesNotExist:
+                    # Skip questions without answers
+                    pass
+            
+            # Generate remedy using Gemini
+            ai_service = GeminiService()
+            remedy_text = ai_service.generate_remedy(query.text, qa_pairs)
+            
+            # Store remedy
+            remedy = Remedy.objects.create(
+                query=query,
+                text=remedy_text
+            )
+            
+            # Return response with remedy
+            return Response({
+                'query_id': query.id,
+                'next_question': None,
+                'remedy': remedy_text,
+                'message': None
+            })
+        
+        # Return response with next question
+        return Response({
+            'query_id': query.id,
+            'next_question': {
+                'id': next_question.id,
+                'text': next_question.text,
+                'order': next_question.order
+            },
+            'remedy': None,
+            'message': None
+        })    
 
-    return JsonResponse({"follow_up_questions": extracted_responses, "thread_id": thread.id})
 
 
+# for directly interacting with drf interface
+class SmartQueryViewSet(viewsets.ViewSet):
+    serializer_class = SmartQuerySerializer
 
+    def get_serializer(self, *args, **kwargs):
+        return SmartQuerySerializer(*args, **kwargs)
 
+    def create(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
+        query_text = data.get("query")
+        answer_text = data.get("answer")
 
+        # 1. Get or create session ID from the user's browser session
+        session_id = request.session.get("chat_session_id")
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            request.session["chat_session_id"] = session_id
 
+        # 2. If user is starting a new query
+        if query_text:
+            ai_service = GeminiService()
+            is_pet_related = ai_service.is_pet_related(query_text)
 
+            query = Query.objects.create(
+                text=query_text,
+                is_pet_related=is_pet_related,
+                session_id=session_id
+            )
 
-@api_view(['POST'])
-def submit_answers(request):
-    data = request.data
-    answers = data.get("answers")
+            if not is_pet_related:
+                return Response({
+                    'message': 'This is not my expertise, please ask a medical query for pets'
+                })
 
-    if not answers:
-        return JsonResponse({"error": "Answers are required"}, status=400)
+            questions = ai_service.generate_followup_questions(query_text)
+            for i, q in enumerate(questions):
+                Question.objects.create(query=query, text=q, order=i+1)
 
-    client = openai.Client(api_key=OPENAI_API_KEY)
-    thread_id = data.get("thread_id")
-
-    # Submit user answers to the assistant
-    formatted_answers = "\n".join(f"{k}: {v}" for k, v in answers.items())
-
-    client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=formatted_answers
-    )
-
-    run = client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=ASSISTANT_ID
-    )
-
-    while run.status in ['queued', 'in_progress']:
-        run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-
-    messages = client.beta.threads.messages.list(thread_id=thread_id)
-    # response_content = messages.data[0].content
-
-    print(messages)
-
-    extracted_responses = []
-    for message in messages.data:
-        for content_block in message.content:
-            if hasattr(content_block, 'text'):
-                try:
-                    parsed_content = json.loads(content_block.text.value)
-                    extracted_responses.append(parsed_content)
-                except json.JSONDecodeError:
-                    extracted_responses.append(content_block.text.value)
-
-    # Extract only causes and recommendations
-    filtered_response = []
-    for item in extracted_responses:
-        if isinstance(item, dict) and 'causes' in item and 'recommendations' in item:
-            filtered_response.append({
-                "causes": item.get("causes", []),
-                "recommendations": item.get("recommendations", [])
+            first_question = query.questions.first()
+            return Response({
+                'message': "Thanks! Here's your first follow-up question, please answer in the text box named 'Answer' :",
+                'question': first_question.text
             })
 
-    return JsonResponse(filtered_response, safe=False)
+        # 3. If answering a question (no query_text, only answer)
+        elif answer_text:
+            try:
+                query = Query.objects.filter(session_id=session_id).latest('created_at')
+            except Query.DoesNotExist:
+                return Response({'error': 'No active session found'}, status=400)
+
+            # Get the next unanswered question
+            answered_ids = Answer.objects.filter(question__query=query).values_list('question_id', flat=True)
+            next_q = Question.objects.filter(query=query).exclude(id__in=answered_ids).order_by('order').first()
+
+            if not next_q:
+                return Response({'message': 'All questions answered or invalid session'}, status=400)
+
+            Answer.objects.create(question=next_q, text=answer_text)
+
+            # Check if more questions remain
+            next_unanswered = Question.objects.filter(query=query).exclude(id__in=answered_ids).exclude(id=next_q.id).order_by('order').first()
+
+            if not next_unanswered:
+                # All answered, generate remedy
+                qa_pairs = []
+                for q in Question.objects.filter(query=query).order_by('order'):
+                    try:
+                        qa_pairs.append({'question': q.text, 'answer': q.answer.text})
+                    except Answer.DoesNotExist:
+                        pass
+
+                ai_service = GeminiService()
+                raw_remedy = ai_service.generate_remedy(query.text, qa_pairs)
+                if isinstance(raw_remedy, str):
+                    try:
+                        remedy_data = json.loads(raw_remedy)
+                    except json.JSONDecodeError:
+                        remedy_data = {"note": "Unable to parse remedy", "raw": raw_remedy}
+                else:
+                    remedy_data = raw_remedy
 
 
+                Remedy.objects.create(query=query, text=remedy_data)
 
+                return Response({
+                    'message': "Thanks! Here's what I recommend:",
+                    'remedy': remedy_data
+                })
 
+            return Response({
+                'message': "Got it! Here's the next question, please answer in the text box named 'Answer' :",
+                'question': next_unanswered.text
+            })
+
+        return Response({'error': 'Please enter either a query or an answer'}, status=400)
