@@ -164,6 +164,12 @@ class SmartQueryViewSet(viewsets.ViewSet):
     def get_serializer(self, *args, **kwargs):
         return SmartQuerySerializer(*args, **kwargs)
 
+    def list(self, request):
+        return Response({
+            "message": "Welcome to the Smart Query API. Use POST to submit a pet health query or answer."
+        })
+
+
     def create(self, request):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)

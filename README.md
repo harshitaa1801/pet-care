@@ -31,6 +31,9 @@ An AI-powered assistant built with Django + Django REST Framework that helps pet
    ```bash
    git clone https://github.com/harshitaa1801/pet-care.git
    cd pet-care
+
+2. **Start Server**
+   ```bash
    python manage.py makemigrations
    python manage.py migrate
    python manage.py runserver
