@@ -3,11 +3,16 @@ import json
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, render
 from .models import Query, Question, Answer, Remedy
 from .serializers import QuerySerializer, AnswerSerializer, QueryResponseSerializer, SmartQuerySerializer
 from .utils import GeminiService
 import uuid
+
+
+# homepage
+def home(request):
+    return render(request, 'chatbot/home.html')
 
 
 
